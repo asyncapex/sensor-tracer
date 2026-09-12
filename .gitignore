@@ -1,0 +1,8 @@
+.venv/
+dialogue-kt/
+__pycache__/
+*.pyc
+harness/cache/
+*.log
+paper/*.aux
+harness/harness_summary.json

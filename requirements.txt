@@ -1,0 +1,17 @@
+# Python 3.12. CPU-only torch is enough for everything except LLMKT fine-tuning (see docs/colab_llmkt.md).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu
+numpy==2.2.6
+pandas==3.0.5
+scipy==1.18.1
+scikit-learn==1.5.2      # pyBKT 1.4.x needs scikit-learn < 1.6
+pyBKT==1.4.3
+pykt-toolkit==0.0.38
+sentence-transformers==6.0.1
+transformers==5.16.1
+peft==0.20.0
+accelerate==1.14.0
+datasets==5.0.1
+openai==3.10.0
+matplotlib==3.11.1
+tqdm==4.70.0

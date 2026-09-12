@@ -1,0 +1,27 @@
+\begin{table*}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{\ourstabsep}
+\renewcommand{\arraystretch}{1.18}
+\caption{MathDial, fixed split (515 test dialogues, 1{,}985 predicted turns). Bold: best per column, ties included; \oursnote. The mixture-head row blends the sensor-tracer's probability with LLMKT's for prediction only; its state, and so its tracking columns, are those of the row above.}
+\label{tab:mathdial}
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+Model & AUC & Acc & ECE & AUC$_{t\le2}$ & AUC$_{t>2}$ & $m_1$ & Wrong dir. & CF viol. & $w_1$ \\
+\midrule
+BKT (pyBKT, unconstrained) & 0.641 & 0.546 & 0.265 & 0.612 & 0.662 & 0.960 & 0.019 & 0.008 & 0.002 \\
+\oursrow Constrained BKT (ours) & 0.646 & 0.611 & \textbf{0.023} & 0.606 & 0.673 & \textbf{1.000} & \textbf{0.000} & \textbf{0.000} & \textbf{0.001} \\
+\oursrow Gaussian tracer (ours) & 0.638 & 0.598 & 0.028 & 0.578 & 0.681 & \textbf{1.000} & \textbf{0.000} & \textbf{0.000} & \textbf{0.001} \\
+\addlinespace[2pt]
+DKT (labels only) & 0.628 & 0.580 & 0.046 & 0.592 & 0.655 & 0.528 & 0.236 & 0.169 & 0.039 \\
+DKT-Sem (reads text) & 0.665 & 0.621 & 0.037 & 0.610 & 0.700 & 0.986 & 0.007 & 0.010 & 0.067 \\
+\addlinespace[2pt]
+GPT-4.1, prompted & 0.641 & 0.562 & 0.303 & 0.613 & 0.665 & 0.379 & 0.310 & -- & -- \\
+LLMKT (fine-tuned) & 0.757 & 0.690 & 0.076 & \textbf{0.744} & 0.766 & 0.065 & 0.447 & -- & -- \\
+\addlinespace[2pt]
+\oursrow Constr. BKT + LLMKT judg. (ours) & 0.636 & 0.608 & \textbf{0.023} & 0.593 & 0.664 & 0.993 & 0.004 & \textbf{0.000} & \textbf{0.001} \\
+\oursrow Gaussian + LLMKT judg. (ours) & 0.686 & 0.646 & 0.043 & 0.642 & 0.719 & 0.924 & 0.038 & \textbf{0.000} & \textbf{0.001} \\
+\oursrow \quad + mixture head (ours) & \textbf{0.762} & \textbf{0.691} & 0.033 & 0.742 & \textbf{0.777} & 0.924 & 0.038 & \textbf{0.000} & \textbf{0.001} \\
+\bottomrule
+\end{tabular}
+\end{table*}

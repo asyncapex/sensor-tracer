@@ -1,0 +1,136 @@
+diff --git a/dialogue_kt/kt_data_loading.py b/dialogue_kt/kt_data_loading.py
+index b84d90f..b9e7aa9 100644
+--- a/dialogue_kt/kt_data_loading.py
++++ b/dialogue_kt/kt_data_loading.py
+@@ -233,7 +233,7 @@ class DKTDataset(DatasetBase):
+                 result_embs = []
+                 for batch_start_idx in range(0, len(seqs), batch_size):
+                     batch = seqs[batch_start_idx : batch_start_idx + batch_size]
+-                    result_embs.append(sbert_model.encode(batch, convert_to_tensor=True))
++                    result_embs.append(sbert_model.encode(batch, convert_to_tensor=True).clone())
+                 result_embs = torch.concat(result_embs, dim=0)
+                 turn_counter = 0
+                 for dialogue in self.data:
+@@ -246,7 +246,7 @@ class DKTDataset(DatasetBase):
+                 result_embs = []
+                 for batch_start_idx in range(0, len(seqs), batch_size):
+                     batch = seqs[batch_start_idx : batch_start_idx + batch_size]
+-                    result_embs.append(sbert_model.encode(batch, convert_to_tensor=True))
++                    result_embs.append(sbert_model.encode(batch, convert_to_tensor=True).clone())
+                 result_embs = torch.concat(result_embs, dim=0)
+                 turn_counter = 0
+                 for dialogue in self.data:
+diff --git a/dialogue_kt/models/lm.py b/dialogue_kt/models/lm.py
+index e5bc8d2..07c2f7c 100644
+--- a/dialogue_kt/models/lm.py
++++ b/dialogue_kt/models/lm.py
+@@ -37,6 +37,10 @@ def get_model(base_model_name: str, test: bool,
+     elif not test:
+         if quantize:
+             model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=use_gradient_checkpointing)
++        elif use_gradient_checkpointing:
++            # bf16 path: without checkpointing a long packed dialogue exhausts a 40 GB GPU
++            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
++            model.enable_input_require_grads()
+         if pt_model_name:
+             print("Initializing trainable model from pre-trained LoRA adapters")
+             model = PeftModel.from_pretrained(model, get_checkpoint_path(pt_model_name), is_trainable=True, adapter_name="default")
+diff --git a/dialogue_kt/training.py b/dialogue_kt/training.py
+index 35fbd52..dd6b32b 100644
+--- a/dialogue_kt/training.py
++++ b/dialogue_kt/training.py
+@@ -1,3 +1,6 @@
++import time
++import re
++import os
+ import json
+ from tqdm import tqdm
+ import torch
+@@ -83,14 +86,41 @@ def hyperparam_sweep(args):
+     with open(f"results/metrics_hpsweep_{args.dataset}_{args.tag_src}_{args.model_type}_agg{args.agg}.txt", "w") as file:
+         file.write(result_str + "\n")
+ 
++
++def _load_saved_fold_metrics(args, fold):
++    """Parse a per-fold metrics file written by compute_all_metrics, or return None."""
++    path = f"results/metrics_{get_model_file_suffix(args, fold)}.txt"
++    if not os.path.exists(path):
++        return None
++    txt = open(path).read()
++    loss = re.search(r"Loss: ([0-9.]+)", txt)
++    rows = re.findall(r"Acc: ([0-9.]+), AUC: ([0-9.]+), Prec: ([0-9.]+), Rec: ([0-9.]+), F1: ([0-9.]+)", txt)
++    if not loss or not rows:
++        return None
++    metrics = [float(loss.group(1))]
++    for row in rows:
++        metrics.extend(float(x) for x in row)
++    return metrics
++
+ def crossval(args, fn):
+     # Train/test models across folds
+     metrics_agg = []
+     folds = COMTA_SUBJECTS if args.split_by_subject else range(1, 6)
++    fold_times = []
+     for fold in folds:
+-        print(f"Fold {fold}...")
++        # Resume: reuse a finished fold's saved metrics instead of retraining it
++        saved = _load_saved_fold_metrics(args, fold)
++        if saved is not None:
++            print(f"Fold {fold}: found saved metrics, skipping (delete results/metrics_{get_model_file_suffix(args, fold)}.txt to redo)")
++            metrics_agg.append(saved)
++            continue
++        print(f"Fold {fold}...", flush=True)
++        t0 = time.time()
+         metrics = fn(args, fold)
+         metrics_agg.append(metrics)
++        fold_times.append(time.time() - t0)
++        remaining = len(list(folds)) - len(metrics_agg)
++        print(f"Fold {fold} done in {fold_times[-1]/60:.1f} min; {remaining} fold(s) left, ETA ~{remaining * np.mean(fold_times)/60:.1f} min", flush=True)
+     # Aggregate and report metrics across folds
+     metrics_np = np.stack(metrics_agg, axis=0)
+     avg = metrics_np.mean(axis=0)
+@@ -173,7 +203,7 @@ def get_lmkt_loss_unpacked(model, batch, true_token, false_token, args):
+     logits = model_output.logits[torch.arange(batch_size), batch["last_idxs"]]
+     # Return probability of True token over False token for each sequence
+     logits = torch.stack([logits[:, true_token], logits[:, false_token]], dim=1)
+-    kc_probs = torch.softmax(logits, dim=1)[torch.arange(batch_size), 0]
++    kc_probs = torch.softmax(logits.float(), dim=1)[torch.arange(batch_size), 0]
+     # Get probability that all KCs are True for each turn in the batch
+     num_kc_counter = 0
+     kc_probs_grouped = []
+@@ -190,7 +220,7 @@ def get_lmkt_loss_unpacked(model, batch, true_token, false_token, args):
+         num_kc_counter += num_kcs
+     corr_probs = torch.stack(corr_probs)
+     # Get BCE loss with correctness labels and predicted probabilities
+-    loss = torch.nn.BCELoss()(corr_probs, batch["labels"])
++    loss = torch.nn.BCELoss()(corr_probs.float(), batch["labels"])
+     return loss, kc_probs_grouped, corr_probs
+ 
+ def get_lmkt_loss_packed(model, batch, true_token, false_token, args):
+@@ -206,7 +236,7 @@ def get_lmkt_loss_packed(model, batch, true_token, false_token, args):
+     logits = model_output.logits[torch.arange(batch_size).unsqueeze(1), batch["last_idxs"]]
+     # Return probability of True token over False token for each sequence
+     logits = torch.stack([logits[:, :, true_token], logits[:, :, false_token]], dim=2)
+-    kc_probs = torch.softmax(logits, dim=2)[:, :, 0]
++    kc_probs = torch.softmax(logits.float(), dim=2)[:, :, 0]
+     # Get probability that all KCs are True for each turn in the batch
+     kc_probs_grouped = [probs[:num_kcs].tolist() for probs, num_kcs in zip(kc_probs, batch["num_kcs"])]
+     # Set probs on padded indices
+@@ -219,7 +249,7 @@ def get_lmkt_loss_packed(model, batch, true_token, false_token, args):
+         corr_probs = kc_probs.sum(dim=1) / batch["num_kcs"]
+     elif args.agg == "mean-geo":
+         corr_probs = kc_probs.prod(dim=1) ** (1 / batch["num_kcs"])
+-    loss = torch.nn.BCELoss()(corr_probs, batch["labels"])
++    loss = torch.nn.BCELoss()(corr_probs.float(), batch["labels"])
+     return loss, kc_probs_grouped, corr_probs
+ 
+ def train_lmkt(args, fold):
+@@ -496,7 +526,7 @@ def compute_baseline_loss(model, batch, args):
+ def compute_kc_emb_matrix(sbert_model: SentenceTransformer, kc_dict: dict):
+     print("Computing SBERT embeddings...")
+     kcs = [kv[0] for kv in sorted(kc_dict.items(), key=lambda kv: kv[1])]
+-    kc_emb_matrix = sbert_model.encode(kcs, convert_to_tensor=True)
++    kc_emb_matrix = sbert_model.encode(kcs, convert_to_tensor=True).clone()
+     return kc_emb_matrix
+ 
+ def train_baseline(args, fold):
